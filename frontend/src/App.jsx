@@ -43,7 +43,13 @@ export default function App() {
         body: JSON.stringify({ messages: newHistory }),
       });
 
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const msg = res.status === 503
+          ? "The AI model is temporarily rate-limited. Please wait a moment and try again."
+          : `Server error: ${res.status}`;
+        throw new Error(msg);
+      }
       const data = await res.json();
 
       const assistantMsg = {

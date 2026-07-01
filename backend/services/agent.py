@@ -4,7 +4,7 @@ Conversational SHL Assessment Recommender Agent.
 import json
 import logging
 import re
-from groq import Groq
+from groq import Groq, RateLimitError
 from backend.config import GROQ_API_KEY, GROQ_MODEL
 from backend.prompts import SYSTEM_PROMPT, REFUSAL_PATTERNS, OFF_TOPIC_RESPONSE
 from backend.services.retrieval import build_catalog_context
@@ -12,6 +12,13 @@ from backend.services.catalog import get_by_name
 from backend.services.comparator import compare
 
 logger = logging.getLogger(__name__)
+
+# Model fallback chain — if primary hits rate limit, try next
+FALLBACK_MODELS = [
+    GROQ_MODEL,                    # llama-3.3-70b-versatile (primary)
+    "llama-3.1-8b-instant",        # separate quota, very fast
+    "gemma2-9b-it",                # another separate quota
+]
 
 # Singleton Groq client — instantiated once, reused across requests
 _client: Groq | None = None
@@ -144,13 +151,29 @@ def chat(messages: list[dict]) -> dict:
     for m in messages[-16:]:
         llm_messages.append({"role": m["role"], "content": m["content"]})
 
-    response = _get_client().chat.completions.create(
-        model=GROQ_MODEL,
-        messages=llm_messages,
-        temperature=0.1,
-        max_tokens=1024,
-        response_format={"type": "json_object"},
-    )
+    response = None
+    last_error = None
+    for model in FALLBACK_MODELS:
+        try:
+            response = _get_client().chat.completions.create(
+                model=model,
+                messages=llm_messages,
+                temperature=0.1,
+                max_tokens=1024,
+                response_format={"type": "json_object"},
+            )
+            if model != GROQ_MODEL:
+                logger.warning(f"[agent] Primary model rate-limited, used fallback: {model}")
+            break
+        except RateLimitError as e:
+            logger.warning(f"[agent] Rate limit on {model}: {e}")
+            last_error = e
+            continue
+
+    if response is None:
+        raise RuntimeError(
+            "All models are currently rate-limited. Please wait a few minutes and try again."
+        )
 
     parsed = _parse_llm_response(response.choices[0].message.content or "")
     reply = str(parsed.get("reply") or "")
