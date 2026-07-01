@@ -11,3 +11,4 @@ frontend/dist/
 # Misc
 .vscode/
 *.log
+docs/generate_pdf.py
